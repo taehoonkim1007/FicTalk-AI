@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import health
+from src.api.routes import health, image_generation, story_generation
 from src.config import settings
 from src.models.database import init_db
 
@@ -36,6 +36,12 @@ app.add_middleware(
 
 # Register routers
 app.include_router(health.router, tags=["Health"])
+app.include_router(
+    story_generation.router, prefix="/api/story-generation", tags=["Story Generation"]
+)
+app.include_router(
+    image_generation.router, prefix="/api/image-generation", tags=["Image Generation"]
+)
 
 
 if __name__ == "__main__":
