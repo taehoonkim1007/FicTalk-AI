@@ -80,13 +80,38 @@ class CharacterGenerationResponse(BaseModel):
 
 
 # ============ Image Generation Schemas ============
-class ProfileImageRequest(BaseModel):
-    name: str = Field(..., description="캐릭터 이름", max_length=100)
-    role: str = Field(..., description="역할 (주인공 또는 조연)", max_length=50)
+class CharacterImageRequest(BaseModel):
+    """프로필 이미지 및 캐릭터 배경 이미지 생성 요청."""
+
     description: str = Field(..., description="캐릭터 설명", max_length=1000)
     personality: str = Field(..., description="캐릭터 성격", max_length=500)
 
 
-class ProfileImageResponse(BaseModel):
+class StoryImageRequest(BaseModel):
+    """커버 이미지 및 스토리 배경 이미지 생성 요청."""
+
+    title: str = Field(..., description="스토리 제목", max_length=200)
+    description: str = Field(..., description="스토리 설명", max_length=500)
+    summary: str = Field(..., description="스토리 요약", max_length=4000)
+
+
+class ImageGenerationResponse(BaseModel):
+    """이미지 생성 공통 응답."""
+
     image_base64: str = Field(..., description="생성된 이미지 (base64 인코딩)")
     prompt_used: str = Field(..., description="이미지 생성에 사용된 프롬프트")
+
+
+# ============ Chat Response Generation Schemas ============
+class ChatResponseRequest(BaseModel):
+    character_name: str = Field(..., description="캐릭터 이름")
+    character_role: str = Field(..., description="캐릭터 역할")
+    character_personality: str = Field(..., description="캐릭터 성격")
+    story_title: str = Field(..., description="스토리 제목")
+    story_summary: str = Field(..., description="스토리 줄거리", max_length=4000)
+    messages: list[ChatMessage] = Field(default_factory=list, description="이전 대화 내역")
+    user_message: str = Field(..., description="사용자 메시지", max_length=2000)
+
+
+class ChatResponseResponse(BaseModel):
+    response: str = Field(..., description="캐릭터의 응답")

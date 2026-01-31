@@ -6,7 +6,13 @@ from google import genai
 from google.genai import types
 
 from src.config import settings
-from src.models.schemas import ProfileImageResponse
+from src.models.schemas import ImageGenerationResponse
+from src.utils.prompts import (
+    BACKGROUND_IMAGE_PROMPT,
+    CHARACTER_BACKGROUND_IMAGE_PROMPT,
+    COVER_IMAGE_PROMPT,
+    PROFILE_IMAGE_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,24 +27,20 @@ class ImageGenerationService:
 
     async def generate_profile_image(
         self,
-        name: str,
-        role: str,
         description: str,
         personality: str,
-    ) -> ProfileImageResponse:
+    ) -> ImageGenerationResponse:
         """캐릭터 프로필 이미지 생성.
 
         Args:
-            name: 캐릭터 이름
-            role: 역할 (주인공 또는 조연)
             description: 캐릭터 설명
             personality: 캐릭터 성격
 
         Returns:
-            ProfileImageResponse: base64 인코딩된 이미지와 사용된 프롬프트
+            ImageGenerationResponse: base64 인코딩된 이미지와 사용된 프롬프트
         """
-        prompt = self._build_profile_image_prompt(name, role, description, personality)
-        logger.info(f"프로필 이미지 생성 시작: {name}")
+        prompt = PROFILE_IMAGE_PROMPT.format(description=description, personality=personality)
+        logger.info("프로필 이미지 생성 시작")
 
         try:
             # 동기 메서드를 람다로 감싸서 별도 스레드에서 실행
@@ -91,8 +93,8 @@ class ImageGenerationService:
                 # 이미 base64 문자열인 경우
                 image_base64 = image_data
 
-            logger.info(f"프로필 이미지 생성 완료: {name}, base64 길이: {len(image_base64)}")
-            return ProfileImageResponse(
+            logger.info(f"프로필 이미지 생성 완료, base64 길이: {len(image_base64)}")
+            return ImageGenerationResponse(
                 image_base64=image_base64,
                 prompt_used=prompt,
             )
@@ -104,30 +106,164 @@ class ImageGenerationService:
             logger.error(traceback.format_exc())
             raise RuntimeError(f"프로필 이미지 생성에 실패했습니다: {e}") from e
 
-    def _build_profile_image_prompt(
+    async def generate_cover_image(
         self,
-        name: str,
-        role: str,
+        title: str,
+        description: str,
+        summary: str,
+    ) -> ImageGenerationResponse:
+        """스토리 커버 이미지 생성.
+
+        Args:
+            title: 스토리 제목
+            description: 스토리 설명
+            summary: 스토리 요약
+
+        Returns:
+            ImageGenerationResponse: base64 인코딩된 이미지와 사용된 프롬프트
+        """
+        summary_excerpt = summary[:1000] if len(summary) > 1000 else summary
+        prompt = COVER_IMAGE_PROMPT.format(
+            title=title, description=description, summary=summary_excerpt
+        )
+        logger.info(f"커버 이미지 생성 시작: {title}")
+
+        try:
+            response = await asyncio.to_thread(
+                lambda: self.client.models.generate_content(
+                    model=self.MODEL_NAME,
+                    contents=[prompt],
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                    ),
+                )
+            )
+
+            image_base64 = self._extract_image_from_response(response)
+            logger.info(f"커버 이미지 생성 완료: {title}, base64 길이: {len(image_base64)}")
+
+            return ImageGenerationResponse(
+                image_base64=image_base64,
+                prompt_used=prompt,
+            )
+
+        except Exception as e:
+            import traceback
+
+            logger.error(f"커버 이미지 생성 실패: {type(e).__name__}: {e}")
+            logger.error(traceback.format_exc())
+            raise RuntimeError(f"커버 이미지 생성에 실패했습니다: {e}") from e
+
+    async def generate_background_image(
+        self,
+        title: str,
+        description: str,
+        summary: str,
+    ) -> ImageGenerationResponse:
+        """스토리 채팅 배경 이미지 생성.
+
+        Args:
+            title: 스토리 제목
+            description: 스토리 설명
+            summary: 스토리 요약
+
+        Returns:
+            ImageGenerationResponse: base64 인코딩된 이미지와 사용된 프롬프트
+        """
+        summary_excerpt = summary[:1000] if len(summary) > 1000 else summary
+        prompt = BACKGROUND_IMAGE_PROMPT.format(
+            title=title, description=description, summary=summary_excerpt
+        )
+        logger.info(f"배경 이미지 생성 시작: {title}")
+
+        try:
+            response = await asyncio.to_thread(
+                lambda: self.client.models.generate_content(
+                    model=self.MODEL_NAME,
+                    contents=[prompt],
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                    ),
+                )
+            )
+
+            image_base64 = self._extract_image_from_response(response)
+            logger.info(f"배경 이미지 생성 완료: {title}, base64 길이: {len(image_base64)}")
+
+            return ImageGenerationResponse(
+                image_base64=image_base64,
+                prompt_used=prompt,
+            )
+
+        except Exception as e:
+            import traceback
+
+            logger.error(f"배경 이미지 생성 실패: {type(e).__name__}: {e}")
+            logger.error(traceback.format_exc())
+            raise RuntimeError(f"배경 이미지 생성에 실패했습니다: {e}") from e
+
+    async def generate_character_background_image(
+        self,
         description: str,
         personality: str,
-    ) -> str:
-        """프로필 이미지 생성용 프롬프트 구성."""
-        prompt_parts = [
-            "Character portrait illustration for a fiction story:",
-            "",
-            f"Character Name: {name}",
-            f"Role: {role}",
-            f"Description: {description}",
-            f"Personality: {personality}",
-            "",
-            "Art Style Requirements:",
-            "- Portrait format (head and shoulders)",
-            "- Clean, simple gradient background",
-            "- High quality digital illustration",
-            "- Semi-realistic anime art style",
-            "- Expressive facial features matching the personality",
-            "- Soft lighting with subtle shadows",
-            "- Suitable for a fiction character profile card",
-        ]
+    ) -> ImageGenerationResponse:
+        """캐릭터별 채팅 배경 이미지 생성.
 
-        return "\n".join(prompt_parts)
+        Args:
+            description: 캐릭터 설명
+            personality: 캐릭터 성격
+
+        Returns:
+            ImageGenerationResponse: base64 인코딩된 이미지와 사용된 프롬프트
+        """
+        prompt = CHARACTER_BACKGROUND_IMAGE_PROMPT.format(
+            description=description, personality=personality
+        )
+        logger.info("캐릭터 배경 이미지 생성 시작")
+
+        try:
+            response = await asyncio.to_thread(
+                lambda: self.client.models.generate_content(
+                    model=self.MODEL_NAME,
+                    contents=[prompt],
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                    ),
+                )
+            )
+
+            image_base64 = self._extract_image_from_response(response)
+            logger.info(f"캐릭터 배경 이미지 생성 완료, base64 길이: {len(image_base64)}")
+
+            return ImageGenerationResponse(
+                image_base64=image_base64,
+                prompt_used=prompt,
+            )
+
+        except Exception as e:
+            import traceback
+
+            logger.error(f"캐릭터 배경 이미지 생성 실패: {type(e).__name__}: {e}")
+            logger.error(traceback.format_exc())
+            raise RuntimeError(f"캐릭터 배경 이미지 생성에 실패했습니다: {e}") from e
+
+    def _extract_image_from_response(self, response) -> str:
+        """Gemini API 응답에서 이미지 데이터 추출."""
+        if not response.candidates:
+            raise ValueError("응답에 candidates가 없습니다")
+
+        candidate = response.candidates[0]
+        image_data = None
+
+        if candidate.content and candidate.content.parts:
+            for part in candidate.content.parts:
+                if part.inline_data is not None:
+                    image_data = part.inline_data.data
+                    break
+
+        if image_data is None:
+            raise ValueError("이미지 생성 결과가 없습니다")
+
+        if isinstance(image_data, bytes):
+            return base64.b64encode(image_data).decode("utf-8")
+        return image_data
