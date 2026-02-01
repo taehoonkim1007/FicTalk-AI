@@ -157,3 +157,74 @@ CHARACTER_BACKGROUND_IMAGE_PROMPT = """소설 캐릭터의 채팅 배경 일러�
 - 캐릭터나 얼굴 없음
 - 부드러운 그라데이션과 은은한 조명
 - 채팅/메시징 앱 배경으로 적합"""
+
+
+# ============ Voice Analysis Prompts ============
+VOICE_ANALYSIS_PROMPT = """당신은 캐릭터의 목소리 특성을 분석하는 전문가입니다.
+주어진 캐릭터 정보를 바탕으로 가장 적합한 목소리 특성과 TTS 설정을 추출하세요.
+
+# 캐릭터 정보
+- 설명: {description}
+- 성격: {personality}
+
+# 분석 기준
+1. **gender**: 캐릭터의 성별 또는 목소리 성향
+   - "male": 남성적인 목소리
+   - "female": 여성적인 목소리
+   - "neutral": 중성적이거나 성별이 불분명한 목소리
+
+2. **age**: 캐릭터의 나이대
+   - "child": 어린이 (10세 이하)
+   - "young": 청소년~청년 (10대~20대)
+   - "middle": 중년 (30대~50대)
+   - "old": 노년 (60대 이상)
+
+3. **accent**: 억양/언어 스타일
+   - "Korean": 한국어 네이티브
+   - "American": 미국식 영어
+   - "British": 영국식 영어
+   - 기타 해당되는 억양
+
+4. **tone**: 음색 특성 (여러 개 선택 가능)
+   - calm: 차분한
+   - warm: 따뜻한
+   - deep: 깊은/낮은
+   - soft: 부드러운
+   - intense: 강렬한
+   - cheerful: 밝은/쾌활한
+   - mysterious: 신비로운
+   - authoritative: 권위있는
+   - gentle: 온화한
+   - energetic: 에너지 넘치는
+
+5. **keywords**: ElevenLabs Voice Library 검색에 사용할 키워드
+   - 캐릭터에 맞는 영어 키워드 2~4개
+   - 예: narrator, storyteller, gentle, wise, young, heroic
+
+6. **voice_settings**: TTS 음성 설정
+   - stability (0.0~1.0): 음성 안정성. 낮을수록 감정 표현이 풍부하고, 높을수록 일관된 톤
+     - 차분한 캐릭터: 0.7~0.9
+     - 감정적인 캐릭터: 0.3~0.5
+     - 기본값: 0.5
+   - similarity_boost (0.0~1.0): 원본 음성과의 유사도. 보통 0.75 권장
+   - style (0.0~1.0): 스타일 과장 정도. 보통 0.0 권장
+   - speed (0.7~1.2): 말하기 속도
+     - 빠르게 말하는 캐릭터: 1.1~1.2
+     - 느리게 말하는 캐릭터: 0.7~0.9
+     - 기본값: 1.0
+
+# 출력 형식
+반드시 다음 JSON 형식으로만 응답하세요:
+{{
+  "gender": "male" | "female" | "neutral",
+  "age": "child" | "young" | "middle" | "old",
+  "accent": "Korean" | "American" | "British" | ...,
+  "tone": ["특성1", "특성2", ...],
+  "keywords": ["keyword1", "keyword2", ...],
+  "voice_settings": {{
+    "stability": 0.0~1.0,
+    "similarity_boost": 0.0~1.0,
+    "style": 0.0~1.0,
+    "speed": 0.7~1.2
+  }}
+}}"""

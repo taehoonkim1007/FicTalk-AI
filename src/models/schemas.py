@@ -115,3 +115,47 @@ class ChatResponseRequest(BaseModel):
 
 class ChatResponseResponse(BaseModel):
     response: str = Field(..., description="캐릭터의 응답")
+
+
+# ============ Voice Recommendation Schemas ============
+class VoiceSettings(BaseModel):
+    """ElevenLabs TTS 음성 설정."""
+
+    stability: float = Field(0.5, ge=0.0, le=1.0, description="음성 안정성 (낮을수록 감정 풍부)")
+    similarity_boost: float = Field(0.75, ge=0.0, le=1.0, description="원본 음성 유사도")
+    style: float = Field(0.0, ge=0.0, le=1.0, description="스타일 과장 정도")
+    speed: float = Field(1.0, ge=0.7, le=1.2, description="말하기 속도")
+
+
+class VoiceAttributes(BaseModel):
+    """AI가 분석한 캐릭터 음성 특성."""
+
+    gender: str = Field(..., description="성별: male, female, neutral")
+    age: str = Field(..., description="나이대: child, young, middle, old")
+    accent: str = Field(..., description="억양: Korean, American, British 등")
+    tone: list[str] = Field(..., description="음색 특성: calm, warm, deep, intense 등")
+    keywords: list[str] = Field(..., description="검색 키워드: narrator, gentle 등")
+
+
+class VoiceRecommendRequest(BaseModel):
+    """Voice 추천 요청."""
+
+    description: str = Field(..., description="캐릭터 설명", max_length=1000)
+    personality: str = Field(..., description="캐릭터 성격", max_length=500)
+
+
+class VoiceRecommendResponse(BaseModel):
+    """Voice 추천 응답."""
+
+    voice_id: str = Field(..., description="ElevenLabs Voice ID")
+    voice_name: str = Field(..., description="Voice 이름")
+    attributes: VoiceAttributes = Field(..., description="분석된 음성 특성")
+    voice_settings: VoiceSettings = Field(..., description="AI가 추천한 음성 설정")
+
+
+class TTSSampleRequest(BaseModel):
+    """TTS 샘플 음성 생성 요청."""
+
+    voice_id: str = Field(..., description="ElevenLabs Voice ID")
+    text: str = Field(..., description="샘플 텍스트", max_length=500)
+    voice_settings: VoiceSettings | None = Field(None, description="음성 설정 (없으면 기본값 사용)")

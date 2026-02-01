@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import chat, health, image_generation, story_generation
+from src.api.routes import chat, health, image_generation, story_generation, tts
 from src.config import settings
 from src.models.database import init_db
 
@@ -43,6 +43,7 @@ app.include_router(
     image_generation.router, prefix="/api/image-generation", tags=["Image Generation"]
 )
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
+app.include_router(tts.router, prefix="/api/tts", tags=["TTS"])
 
 
 if __name__ == "__main__":
