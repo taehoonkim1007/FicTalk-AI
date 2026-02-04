@@ -5,6 +5,19 @@ import logging
 from google import genai
 from google.genai import types
 
+from src.common.constants.error_messages import (
+    ERROR_BACKGROUND_IMAGE,
+    ERROR_CHARACTER_BACKGROUND_IMAGE,
+    ERROR_COVER_IMAGE,
+    ERROR_PROFILE_IMAGE,
+)
+from src.common.constants.gemini import GEMINI_IMAGE_MODEL
+from src.common.constants.operation_names import (
+    OP_BACKGROUND_IMAGE,
+    OP_CHARACTER_BACKGROUND_IMAGE,
+    OP_COVER_IMAGE,
+    OP_PROFILE_IMAGE,
+)
 from src.config import settings
 from src.models.schemas import ImageGenerationResponse
 from src.utils.prompts import (
@@ -13,14 +26,18 @@ from src.utils.prompts import (
     COVER_IMAGE_PROMPT,
     PROFILE_IMAGE_PROMPT,
 )
+from src.utils.retry import retry_api_call_tuple
 
 logger = logging.getLogger(__name__)
 
 
 class ImageGenerationService:
-    """Google Gemini 2.5 Flash Image를 사용한 이미지 생성 서비스."""
+    """Google Gemini 2.5 Flash Image를 사용한 이미지 생성 서비스.
 
-    MODEL_NAME = "gemini-2.5-flash-image"
+    Rate limit 발생 시 지수 백오프로 재시도합니다.
+    """
+
+    MODEL_NAME = GEMINI_IMAGE_MODEL
 
     def __init__(self) -> None:
         self.client = genai.Client(api_key=settings.google_api_key)
@@ -42,8 +59,7 @@ class ImageGenerationService:
         prompt = PROFILE_IMAGE_PROMPT.format(description=description, personality=personality)
         logger.info("프로필 이미지 생성 시작")
 
-        try:
-            # 동기 메서드를 람다로 감싸서 별도 스레드에서 실행
+        async def _call_api() -> tuple[str, str]:
             response = await asyncio.to_thread(
                 lambda: self.client.models.generate_content(
                     model=self.MODEL_NAME,
@@ -53,58 +69,17 @@ class ImageGenerationService:
                     ),
                 )
             )
+            image_base64 = self._extract_image_from_response(response)
+            return (image_base64, prompt)
 
-            # 디버그 로깅
-            logger.info(f"응답 타입: {type(response)}")
-            logger.info(f"candidates 수: {len(response.candidates) if response.candidates else 0}")
+        image_base64, prompt_used = await retry_api_call_tuple(
+            _call_api,
+            operation_name=OP_PROFILE_IMAGE,
+            error_message=ERROR_PROFILE_IMAGE,
+        )
 
-            if not response.candidates:
-                raise ValueError("응답에 candidates가 없습니다")
-
-            candidate = response.candidates[0]
-            logger.info(f"candidate 타입: {type(candidate)}")
-            logger.info(f"content 타입: {type(candidate.content)}")
-            parts_count = 0
-            if candidate.content and candidate.content.parts:
-                parts_count = len(candidate.content.parts)
-            logger.info(f"parts 수: {parts_count}")
-
-            # 응답에서 이미지 추출
-            image_data = None
-            if candidate.content and candidate.content.parts:
-                for i, part in enumerate(candidate.content.parts):
-                    logger.info(
-                        f"part[{i}] 타입: {type(part)}, inline_data: {part.inline_data is not None}"
-                    )
-                    if part.inline_data is not None:
-                        image_data = part.inline_data.data
-                        logger.info(
-                            f"이미지 데이터 타입: {type(image_data)}, 크기: {len(image_data) if image_data else 0}"
-                        )
-                        break
-
-            if image_data is None:
-                raise ValueError("이미지 생성 결과가 없습니다")
-
-            # 이미지 데이터가 이미 bytes인 경우 직접 인코딩
-            if isinstance(image_data, bytes):
-                image_base64 = base64.b64encode(image_data).decode("utf-8")
-            else:
-                # 이미 base64 문자열인 경우
-                image_base64 = image_data
-
-            logger.info(f"프로필 이미지 생성 완료, base64 길이: {len(image_base64)}")
-            return ImageGenerationResponse(
-                image_base64=image_base64,
-                prompt_used=prompt,
-            )
-
-        except Exception as e:
-            import traceback
-
-            logger.error(f"프로필 이미지 생성 실패: {type(e).__name__}: {e}")
-            logger.error(traceback.format_exc())
-            raise RuntimeError(f"프로필 이미지 생성에 실패했습니다: {e}") from e
+        logger.info(f"프로필 이미지 생성 완료, base64 길이: {len(image_base64)}")
+        return ImageGenerationResponse(image_base64=image_base64, prompt_used=prompt_used)
 
     async def generate_cover_image(
         self,
@@ -122,13 +97,10 @@ class ImageGenerationService:
         Returns:
             ImageGenerationResponse: base64 인코딩된 이미지와 사용된 프롬프트
         """
-        summary_excerpt = summary[:1000] if len(summary) > 1000 else summary
-        prompt = COVER_IMAGE_PROMPT.format(
-            title=title, description=description, summary=summary_excerpt
-        )
+        prompt = COVER_IMAGE_PROMPT.format(title=title, description=description, summary=summary)
         logger.info(f"커버 이미지 생성 시작: {title}")
 
-        try:
+        async def _call_api() -> tuple[str, str]:
             response = await asyncio.to_thread(
                 lambda: self.client.models.generate_content(
                     model=self.MODEL_NAME,
@@ -138,21 +110,17 @@ class ImageGenerationService:
                     ),
                 )
             )
-
             image_base64 = self._extract_image_from_response(response)
-            logger.info(f"커버 이미지 생성 완료: {title}, base64 길이: {len(image_base64)}")
+            return (image_base64, prompt)
 
-            return ImageGenerationResponse(
-                image_base64=image_base64,
-                prompt_used=prompt,
-            )
+        image_base64, prompt_used = await retry_api_call_tuple(
+            _call_api,
+            operation_name=OP_COVER_IMAGE,
+            error_message=ERROR_COVER_IMAGE,
+        )
 
-        except Exception as e:
-            import traceback
-
-            logger.error(f"커버 이미지 생성 실패: {type(e).__name__}: {e}")
-            logger.error(traceback.format_exc())
-            raise RuntimeError(f"커버 이미지 생성에 실패했습니다: {e}") from e
+        logger.info(f"커버 이미지 생성 완료: {title}, base64 길이: {len(image_base64)}")
+        return ImageGenerationResponse(image_base64=image_base64, prompt_used=prompt_used)
 
     async def generate_background_image(
         self,
@@ -170,13 +138,12 @@ class ImageGenerationService:
         Returns:
             ImageGenerationResponse: base64 인코딩된 이미지와 사용된 프롬프트
         """
-        summary_excerpt = summary[:1000] if len(summary) > 1000 else summary
         prompt = BACKGROUND_IMAGE_PROMPT.format(
-            title=title, description=description, summary=summary_excerpt
+            title=title, description=description, summary=summary
         )
         logger.info(f"배경 이미지 생성 시작: {title}")
 
-        try:
+        async def _call_api() -> tuple[str, str]:
             response = await asyncio.to_thread(
                 lambda: self.client.models.generate_content(
                     model=self.MODEL_NAME,
@@ -186,21 +153,17 @@ class ImageGenerationService:
                     ),
                 )
             )
-
             image_base64 = self._extract_image_from_response(response)
-            logger.info(f"배경 이미지 생성 완료: {title}, base64 길이: {len(image_base64)}")
+            return (image_base64, prompt)
 
-            return ImageGenerationResponse(
-                image_base64=image_base64,
-                prompt_used=prompt,
-            )
+        image_base64, prompt_used = await retry_api_call_tuple(
+            _call_api,
+            operation_name=OP_BACKGROUND_IMAGE,
+            error_message=ERROR_BACKGROUND_IMAGE,
+        )
 
-        except Exception as e:
-            import traceback
-
-            logger.error(f"배경 이미지 생성 실패: {type(e).__name__}: {e}")
-            logger.error(traceback.format_exc())
-            raise RuntimeError(f"배경 이미지 생성에 실패했습니다: {e}") from e
+        logger.info(f"배경 이미지 생성 완료: {title}, base64 길이: {len(image_base64)}")
+        return ImageGenerationResponse(image_base64=image_base64, prompt_used=prompt_used)
 
     async def generate_character_background_image(
         self,
@@ -221,7 +184,7 @@ class ImageGenerationService:
         )
         logger.info("캐릭터 배경 이미지 생성 시작")
 
-        try:
+        async def _call_api() -> tuple[str, str]:
             response = await asyncio.to_thread(
                 lambda: self.client.models.generate_content(
                     model=self.MODEL_NAME,
@@ -231,21 +194,17 @@ class ImageGenerationService:
                     ),
                 )
             )
-
             image_base64 = self._extract_image_from_response(response)
-            logger.info(f"캐릭터 배경 이미지 생성 완료, base64 길이: {len(image_base64)}")
+            return (image_base64, prompt)
 
-            return ImageGenerationResponse(
-                image_base64=image_base64,
-                prompt_used=prompt,
-            )
+        image_base64, prompt_used = await retry_api_call_tuple(
+            _call_api,
+            operation_name=OP_CHARACTER_BACKGROUND_IMAGE,
+            error_message=ERROR_CHARACTER_BACKGROUND_IMAGE,
+        )
 
-        except Exception as e:
-            import traceback
-
-            logger.error(f"캐릭터 배경 이미지 생성 실패: {type(e).__name__}: {e}")
-            logger.error(traceback.format_exc())
-            raise RuntimeError(f"캐릭터 배경 이미지 생성에 실패했습니다: {e}") from e
+        logger.info(f"캐릭터 배경 이미지 생성 완료, base64 길이: {len(image_base64)}")
+        return ImageGenerationResponse(image_base64=image_base64, prompt_used=prompt_used)
 
     def _extract_image_from_response(self, response) -> str:
         """Gemini API 응답에서 이미지 데이터 추출."""

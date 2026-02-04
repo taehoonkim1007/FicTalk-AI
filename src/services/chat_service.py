@@ -1,214 +1,261 @@
-import asyncio
 import logging
+import uuid
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Literal, TypedDict
 
-import google.generativeai as genai
-from google.api_core.exceptions import ResourceExhausted
-from google.generativeai.types import GenerationConfig
+from langgraph.graph import END, StateGraph
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.config import settings
-from src.models.schemas import ChatMessage, ChatResponseResponse
-from src.utils.prompts import CHAT_SYSTEM_PROMPT
+from src.common.constants.settings import SESSION_TTL_MINUTES
+from src.graphs.nodes import (
+    generate_creative_response,
+    generate_rag_response,
+    retrieve_and_evaluate,
+)
+from src.graphs.state import ChatState
+from src.services.rag_service import RAGService
 
 logger = logging.getLogger(__name__)
 
-# 재시도 설정
-MAX_RETRIES = 3
-INITIAL_DELAY = 2  # 초기 대기 시간 (초)
-MAX_DELAY = 30  # 최대 대기 시간 (초)
 
-# 세션 캐시 설정
-SESSION_TTL_MINUTES = 30  # 세션 유효 시간
+class CacheEntry(TypedDict):
+    """세션 캐시 엔트리."""
+
+    messages: list[dict]
+    expires_at: datetime
+
+
+class ChatResult(TypedDict):
+    """채팅 응답 결과."""
+
+    response: str
+    used_rag: bool
+    mode: Literal["rag", "creative"]
+    max_similarity: float
+    session_id: str
 
 
 class ChatSessionCache:
-    """캐릭터별 채팅 세션 캐시."""
+    """대화 세션 메모리 캐시.
 
-    def __init__(self) -> None:
-        self._cache: dict[str, dict[str, Any]] = {}
+    세션 ID를 키로 대화 내역을 저장하여 네트워크 비용을 절감합니다.
+    TTL 기반으로 오래된 세션은 자동 만료됩니다.
+    """
 
-    def get(self, character_key: str) -> tuple[Any, list[dict]] | None:
-        """캐시된 세션과 히스토리 반환."""
-        if character_key not in self._cache:
+    def __init__(self, ttl_minutes: int = SESSION_TTL_MINUTES) -> None:
+        self._cache: dict[str, CacheEntry] = {}
+        self._ttl_minutes = ttl_minutes
+
+    def get(self, session_id: str) -> list[dict] | None:
+        """캐시된 메시지 반환."""
+        if session_id not in self._cache:
             return None
 
-        entry = self._cache[character_key]
+        entry = self._cache[session_id]
         if datetime.now() > entry["expires_at"]:
-            del self._cache[character_key]
+            del self._cache[session_id]
+            logger.info(f"세션 만료: {session_id}")
             return None
 
-        return entry["chat"], entry["history"]
+        return entry["messages"]
 
-    def set(
-        self,
-        character_key: str,
-        chat: Any,
-        history: list[dict],
-    ) -> None:
-        """세션과 히스토리 캐싱."""
-        self._cache[character_key] = {
-            "chat": chat,
-            "history": history,
-            "expires_at": datetime.now() + timedelta(minutes=SESSION_TTL_MINUTES),
+    def set(self, session_id: str, messages: list[dict]) -> None:
+        """메시지 캐싱."""
+        self._cache[session_id] = {
+            "messages": messages,
+            "expires_at": datetime.now() + timedelta(minutes=self._ttl_minutes),
         }
 
-    def update_history(self, character_key: str, history: list[dict]) -> None:
-        """히스토리만 업데이트."""
-        if character_key in self._cache:
-            self._cache[character_key]["history"] = history
-            self._cache[character_key]["expires_at"] = datetime.now() + timedelta(
-                minutes=SESSION_TTL_MINUTES
+    def update(self, session_id: str, messages: list[dict]) -> None:
+        """메시지 업데이트 및 TTL 갱신."""
+        if session_id in self._cache:
+            self._cache[session_id]["messages"] = messages
+            self._cache[session_id]["expires_at"] = datetime.now() + timedelta(
+                minutes=self._ttl_minutes
             )
 
-    def invalidate(self, character_key: str) -> None:
-        """캐시 무효화."""
-        if character_key in self._cache:
-            del self._cache[character_key]
+    def create_session(self, messages: list[dict] | None = None) -> str:
+        """새 세션 생성 및 ID 반환."""
+        session_id = str(uuid.uuid4())
+        self.set(session_id, messages or [])
+        logger.info(f"새 세션 생성: {session_id}")
+        return session_id
 
-    def clear_expired(self) -> None:
-        """만료된 캐시 정리."""
+    def clear_expired(self) -> int:
+        """만료된 캐시 정리. 정리된 세션 수 반환."""
         now = datetime.now()
         expired_keys = [key for key, entry in self._cache.items() if now > entry["expires_at"]]
         for key in expired_keys:
             del self._cache[key]
+        if expired_keys:
+            logger.info(f"만료된 세션 정리: {len(expired_keys)}개")
+        return len(expired_keys)
 
 
 class ChatService:
-    """Google Gemini를 사용한 캐릭터 채팅 서비스."""
+    """LangGraph 기반 채팅 서비스.
 
-    MODEL_NAME = "gemini-2.0-flash-lite"
+    RAG 검색 결과의 유사도에 따라 RAG 모드 또는 Creative 모드로 분기합니다.
+    세션 캐싱을 통해 대화 내역을 서버에 저장하여 네트워크 비용을 절감합니다.
+
+    워크플로우:
+    ```
+    사용자 메시지
+        ↓
+    [retrieve_and_evaluate] RAG 검색 + Self-RAG 평가
+        ↓
+    [조건부 분기]
+        ├─ 적합성 평가 통과 (또는 유사도 ≥ 0.63) → [rag_response]
+        └─ 적합성 평가 실패 (또는 유사도 < 0.63) → [creative_response]
+        ↓
+    응답 반환
+    ```
+    """
 
     def __init__(self) -> None:
-        genai.configure(api_key=settings.google_api_key)
-        self.generation_config = GenerationConfig(
-            temperature=0.8,
-            max_output_tokens=512,
-        )
+        self._rag_service = RAGService()
         self._session_cache = ChatSessionCache()
-        self._model_cache: dict[str, genai.GenerativeModel] = {}
+        self._workflow = self._build_workflow()
 
-    def _get_character_key(
-        self, character_name: str, story_title: str, user_id: str = "default"
-    ) -> str:
-        """캐릭터별 고유 키 생성."""
-        return f"{user_id}:{story_title}:{character_name}"
+    def _build_workflow(self) -> StateGraph:
+        """워크플로우 그래프 구성."""
+        workflow = StateGraph(ChatState)
 
-    def _get_or_create_model(
-        self, character_key: str, system_instruction: str
-    ) -> genai.GenerativeModel:
-        """모델 캐시에서 가져오거나 새로 생성."""
-        if character_key not in self._model_cache:
-            self._model_cache[character_key] = genai.GenerativeModel(
-                model_name=self.MODEL_NAME,
-                system_instruction=system_instruction,
-                generation_config=self.generation_config,
-            )
-            logger.info(f"새 모델 생성: {character_key}")
-        return self._model_cache[character_key]
+        # 노드 추가
+        workflow.add_node("retrieve_and_evaluate", self._retrieve_node)
+        workflow.add_node("rag_response", self._rag_response_node)
+        workflow.add_node("creative_response", self._creative_response_node)
 
-    async def generate_response(
+        # 시작점 설정
+        workflow.set_entry_point("retrieve_and_evaluate")
+
+        # 조건부 엣지: 모드에 따라 분기
+        workflow.add_conditional_edges(
+            "retrieve_and_evaluate",
+            self._route_by_mode,
+            {
+                "rag": "rag_response",
+                "creative": "creative_response",
+            },
+        )
+
+        # 종료 엣지
+        workflow.add_edge("rag_response", END)
+        workflow.add_edge("creative_response", END)
+
+        return workflow
+
+    def _route_by_mode(self, state: ChatState) -> str:
+        """모드에 따라 라우팅."""
+        return state["mode"]
+
+    async def _retrieve_node(self, state: ChatState) -> dict:
+        """RAG 검색 노드 (db 세션은 run에서 주입)."""
+        # db 세션은 _current_db에서 가져옴
+        return await retrieve_and_evaluate(
+            state=state,
+            rag_service=self._rag_service,
+            db=self._current_db,
+        )
+
+    async def _rag_response_node(self, state: ChatState) -> dict:
+        """RAG 모드 응답 노드."""
+        return await generate_rag_response(state)
+
+    async def _creative_response_node(self, state: ChatState) -> dict:
+        """Creative 모드 응답 노드."""
+        return await generate_creative_response(state)
+
+    async def run(
         self,
         character_name: str,
         character_role: str,
         character_personality: str,
+        story_id: str,
         story_title: str,
         story_summary: str,
-        messages: list[ChatMessage],
+        messages: list[dict] | None,
         user_message: str,
-    ) -> ChatResponseResponse:
-        """캐릭터로서 응답 생성 (세션 캐싱 적용)."""
-        character_key = self._get_character_key(character_name, story_title)
+        db: AsyncSession,
+        session_id: str | None = None,
+    ) -> ChatResult:
+        """채팅 응답 생성.
 
-        # 시스템 프롬프트 구성
-        system_prompt = CHAT_SYSTEM_PROMPT.format(
-            character_name=character_name,
-            character_role=character_role,
-            character_personality=character_personality or "특별한 성격 설정 없음",
-            story_title=story_title,
-            story_summary=story_summary[:1000] if story_summary else "줄거리 정보 없음",
+        Args:
+            character_name: 캐릭터 이름
+            character_role: 캐릭터 역할
+            character_personality: 캐릭터 성격
+            story_id: 스토리 ID (RAG 검색용)
+            story_title: 스토리 제목
+            story_summary: 스토리 줄거리
+            messages: 이전 대화 내역 (session_id가 있으면 생략 가능)
+            user_message: 사용자 메시지
+            db: 데이터베이스 세션
+            session_id: 세션 ID (캐시된 대화 사용 시)
+
+        Returns:
+            응답 결과 (response, used_rag, mode, max_similarity, session_id)
+        """
+        # DB 세션을 인스턴스 변수로 저장 (노드에서 사용)
+        self._current_db = db
+
+        # 세션 캐시에서 메시지 가져오기 또는 새 세션 생성
+        if session_id:
+            cached_messages = self._session_cache.get(session_id)
+            if cached_messages is not None:
+                effective_messages = cached_messages
+                logger.info(f"캐시 히트: {session_id} (메시지 {len(cached_messages)}개)")
+            else:
+                # 세션 만료 - 새 세션 생성
+                effective_messages = messages or []
+                session_id = self._session_cache.create_session(effective_messages)
+                logger.info(f"세션 만료로 새 세션 생성: {session_id}")
+        else:
+            # 새 세션 생성
+            effective_messages = messages or []
+            session_id = self._session_cache.create_session(effective_messages)
+
+        # 초기 상태 구성
+        initial_state: ChatState = {
+            "character_name": character_name,
+            "character_role": character_role,
+            "character_personality": character_personality,
+            "story_id": story_id,
+            "story_title": story_title,
+            "story_summary": story_summary,
+            "messages": effective_messages,
+            "user_message": user_message,
+            "rag_results": [],
+            "max_similarity": 0.0,
+            "mode": "creative",
+            "response": "",
+            "used_rag": False,
+        }
+
+        # 워크플로우 컴파일 및 실행
+        compiled = self._workflow.compile()
+        result = await compiled.ainvoke(initial_state)
+
+        # 응답 후 메시지 히스토리 업데이트
+        updated_messages = [
+            *effective_messages,
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": result["response"]},
+        ]
+        self._session_cache.update(session_id, updated_messages)
+
+        logger.info(
+            f"채팅 응답 생성 완료: {character_name} | "
+            f"모드: {result['mode']} | "
+            f"유사도: {result['max_similarity']:.3f} | "
+            f"RAG 사용: {result['used_rag']} | "
+            f"세션: {session_id}"
         )
 
-        # 캐시된 모델 가져오기 또는 생성
-        model = self._get_or_create_model(character_key, system_prompt)
-
-        # 캐시된 세션 확인
-        cached = self._session_cache.get(character_key)
-
-        if cached:
-            chat, cached_history = cached
-            # 새로운 메시지가 있는지 확인
-            new_messages = (
-                messages[len(cached_history) :] if len(messages) > len(cached_history) else []
-            )
-            logger.info(
-                f"캐시된 세션 사용: {character_key} "
-                f"(캐시: {len(cached_history)}개, 새 메시지: {len(new_messages)}개)"
-            )
-        else:
-            # 새 세션 생성 - 히스토리 없이 시작
-            chat_history = []
-            # 최근 메시지만 히스토리로 변환 (최대 5개로 축소)
-            recent_messages = messages[-5:] if len(messages) > 5 else messages
-            for msg in recent_messages:
-                role = "user" if msg.role == "user" else "model"
-                chat_history.append({"role": role, "parts": [msg.content]})
-
-            chat = model.start_chat(history=chat_history)
-            self._session_cache.set(character_key, chat, messages)
-            logger.info(f"새 세션 생성: {character_key} (히스토리: {len(chat_history)}개)")
-
-        # 응답 생성 (재시도 로직 포함)
-        last_error = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                response = await chat.send_message_async(user_message)
-                response_text = response.text.strip()
-
-                # 응답 정리 (캐릭터 이름 접두사 제거)
-                if response_text.startswith(f"{character_name}:"):
-                    response_text = response_text[len(f"{character_name}:") :].strip()
-
-                # 히스토리 업데이트
-                updated_messages = [
-                    *messages,
-                    ChatMessage(role="user", content=user_message),
-                    ChatMessage(role="assistant", content=response_text),
-                ]
-                self._session_cache.update_history(character_key, updated_messages)
-
-                logger.info(f"캐릭터 '{character_name}'({story_title}) 응답 생성 완료")
-                return ChatResponseResponse(response=response_text)
-
-            except ResourceExhausted as e:
-                last_error = e
-                delay = min(INITIAL_DELAY * (2**attempt), MAX_DELAY)
-                logger.warning(
-                    f"API 할당량 초과 (시도 {attempt + 1}/{MAX_RETRIES}). {delay}초 후 재시도..."
-                )
-                await asyncio.sleep(delay)
-
-            except Exception as e:
-                # 세션 오류 시 캐시 무효화 후 재시도
-                if "history" in str(e).lower() or "session" in str(e).lower():
-                    logger.warning(f"세션 오류, 캐시 무효화: {e}")
-                    self._session_cache.invalidate(character_key)
-                    if character_key in self._model_cache:
-                        del self._model_cache[character_key]
-
-                logger.error(f"채팅 응답 생성 실패: {e}")
-                raise RuntimeError(f"응답 생성에 실패했습니다: {e}") from e
-
-        # 모든 재시도 실패
-        logger.error(f"최대 재시도 횟수 초과: {last_error}")
-        raise RuntimeError(
-            "API 요청 한도를 초과했습니다. 잠시 후 다시 시도해주세요."
-        ) from last_error
-
-    def clear_session(self, character_name: str, story_title: str) -> None:
-        """특정 캐릭터의 세션 캐시 삭제."""
-        character_key = self._get_character_key(character_name, story_title)
-        self._session_cache.invalidate(character_key)
-        if character_key in self._model_cache:
-            del self._model_cache[character_key]
-        logger.info(f"세션 캐시 삭제: {character_key}")
+        return {
+            "response": result["response"],
+            "used_rag": result["used_rag"],
+            "mode": result["mode"],
+            "max_similarity": result["max_similarity"],
+            "session_id": session_id,
+        }
