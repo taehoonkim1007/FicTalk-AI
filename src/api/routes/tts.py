@@ -1,7 +1,8 @@
 import base64
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from src.api.dependencies import get_voice_service
 from src.models.schemas import TTSSampleRequest, VoiceRecommendRequest, VoiceRecommendResponse
 from src.services.voice_service import VoiceService
 
@@ -9,21 +10,23 @@ router = APIRouter()
 
 
 @router.post("/voice-id", response_model=VoiceRecommendResponse)
-async def get_voice_id(request: VoiceRecommendRequest) -> VoiceRecommendResponse:
+async def get_voice_id(
+    request: VoiceRecommendRequest,
+    service: VoiceService = Depends(get_voice_service),
+) -> VoiceRecommendResponse:
     """캐릭터 Voice ID 조회 API.
 
     캐릭터의 설명과 성격을 AI로 분석하여 ElevenLabs Voice Library에서
     가장 적합한 voice ID를 반환합니다.
 
-    - **description**: 캐릭터 설명 (최대 1000자)
-    - **personality**: 캐릭터 성격 (최대 500자)
+    - **description**: 캐릭터 설명 (최대 400자)
+    - **personality**: 캐릭터 성격 (최대 400자)
 
     Returns:
         - **voice_id**: ElevenLabs Voice ID
         - **voice_name**: Voice 이름
         - **attributes**: 분석된 음성 특성 (gender, age, accent, tone, keywords)
     """
-    service = VoiceService()
     try:
         return await service.recommend_voice(request.description, request.personality)
     except RuntimeError as e:
@@ -31,7 +34,10 @@ async def get_voice_id(request: VoiceRecommendRequest) -> VoiceRecommendResponse
 
 
 @router.post("/sample")
-async def generate_sample_audio(request: TTSSampleRequest) -> dict:
+async def generate_sample_audio(
+    request: TTSSampleRequest,
+    service: VoiceService = Depends(get_voice_service),
+) -> dict:
     """TTS 샘플 음성 생성 API.
 
     지정된 voice ID로 텍스트를 음성으로 변환하여 반환합니다.
@@ -43,7 +49,6 @@ async def generate_sample_audio(request: TTSSampleRequest) -> dict:
     Returns:
         - **audio_base64**: 생성된 음성 (base64 인코딩, MP3 포맷)
     """
-    service = VoiceService()
     try:
         audio_bytes = await service.generate_sample_audio(
             request.voice_id, request.text, request.voice_settings
