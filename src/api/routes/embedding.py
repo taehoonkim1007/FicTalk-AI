@@ -32,7 +32,7 @@ async def process_story_embedding(
     - **summary**: 스토리 줄거리 텍스트
 
     스토리 요약을 500자 단위로 청킹하고, 각 청크에 대해
-    Gemini text-embedding-004 모델로 768차원 임베딩을 생성합니다.
+    Gemini gemini-embedding-001 모델로 768차원 임베딩을 생성합니다.
     """
     try:
         chunk_count = await service.process_story_summary(

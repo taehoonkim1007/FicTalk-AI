@@ -1,5 +1,3 @@
-"""RAG 서비스 - 벡터 검색을 통한 관련 컨텍스트 조회."""
-
 import logging
 import re
 
@@ -8,12 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.common.constants.settings import (
     KEYWORD_BOOST,
+    KOREAN_PARTICLES,
     KOREAN_STOPWORDS,
     RERANK_FINAL_TOP_K,
     RERANK_INITIAL_TOP_K,
     SIMILARITY_THRESHOLD,
 )
 from src.services.embedding_service import EmbeddingService
+from src.utils.text import word_boundary_match
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class RAGService:
         self.embedding_service = EmbeddingService()
 
     def _extract_keywords(self, query: str) -> list[str]:
-        """쿼리에서 키워드 추출 (불용어 제거).
+        """쿼리에서 키워드 추출 (불용어 제거, 조사 제거).
 
         Args:
             query: 사용자 질문
@@ -33,14 +33,26 @@ class RAGService:
         Returns:
             키워드 리스트
         """
-        # 한글, 영문, 숫자만 추출
         words = re.findall(r"[가-힣a-zA-Z0-9]+", query)
-        # 불용어 제거 및 2글자 이상만 유지
-        keywords = [w for w in words if w not in KOREAN_STOPWORDS and len(w) >= 2]
+        keywords = []
+
+        for word in words:
+            if word in KOREAN_STOPWORDS or len(word) < 2:
+                continue
+
+            # 한국어 조사 제거 (긴 조사부터 체크)
+            for particle in sorted(KOREAN_PARTICLES, key=len, reverse=True):
+                if word.endswith(particle) and len(word) > len(particle):
+                    word = word[: -len(particle)]
+                    break
+
+            if len(word) >= 2 and word not in keywords:
+                keywords.append(word)
+
         return keywords
 
     def _calculate_keyword_boost(self, content: str, keywords: list[str]) -> float:
-        """청크 내용과 키워드 매칭 점수 계산.
+        """청크 내용과 키워드 매칭 점수 계산 (단어 경계 고려).
 
         Args:
             content: 청크 내용
@@ -52,9 +64,7 @@ class RAGService:
         if not keywords:
             return 0.0
 
-        content_lower = content.lower()
-        matched = sum(1 for kw in keywords if kw.lower() in content_lower)
-        # 매칭된 키워드 비율에 따라 부스트
+        matched = sum(1 for kw in keywords if word_boundary_match(kw, content))
         return (matched / len(keywords)) * KEYWORD_BOOST
 
     async def search_relevant_chunks(
@@ -82,20 +92,18 @@ class RAGService:
 
             # pgvector cosine similarity 검색
             # 1 - cosine_distance = cosine_similarity (높을수록 유사)
+            # 임베딩 벡터는 직접 삽입 (SQL injection 위험 없음 - 숫자 배열)
+            sql = f"""
+                SELECT content, 1 - (embedding <=> '{embedding_str}'::vector) as similarity
+                FROM "StoryContent"
+                WHERE "storyId" = :story_id
+                  AND embedding IS NOT NULL
+                ORDER BY embedding <=> '{embedding_str}'::vector
+                LIMIT :top_k
+            """
             result = await db.execute(
-                text("""
-                    SELECT content, 1 - (embedding <=> :query_embedding::vector) as similarity
-                    FROM "StoryContent"
-                    WHERE "storyId" = :story_id
-                      AND embedding IS NOT NULL
-                    ORDER BY embedding <=> :query_embedding::vector
-                    LIMIT :top_k
-                """),
-                {
-                    "query_embedding": embedding_str,
-                    "story_id": story_id,
-                    "top_k": top_k,
-                },
+                text(sql),
+                {"story_id": story_id, "top_k": top_k},
             )
 
             rows = result.fetchall()

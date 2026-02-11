@@ -42,6 +42,7 @@ from src.common.constants.voice_keywords import FEMALE_KEYWORDS, MALE_KEYWORDS
 from src.config import settings
 from src.models.schemas import VoiceAttributes, VoiceRecommendResponse, VoiceSettings
 from src.utils.prompts import VOICE_ANALYSIS_PROMPT
+from src.utils.text import word_boundary_match
 
 logger = logging.getLogger(__name__)
 
@@ -184,13 +185,12 @@ class VoiceService:
         raise json.JSONDecodeError("모든 파싱 방법 실패", text, 0)
 
     def _infer_gender_from_text(self, text: str) -> str:
-        """텍스트에서 성별을 직접 추론 (AI 실패 시 폴백)."""
-        text_lower = text.lower()
+        """텍스트에서 성별을 직접 추론 (AI 실패 시 폴백, 단어 경계 고려)."""
         for keyword in FEMALE_KEYWORDS:
-            if keyword in text_lower:
+            if word_boundary_match(keyword, text):
                 return "female"
         for keyword in MALE_KEYWORDS:
-            if keyword in text_lower:
+            if word_boundary_match(keyword, text):
                 return "male"
         return "neutral"
 
