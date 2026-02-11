@@ -50,7 +50,7 @@ class StoryGenerationService:
                     max_output_tokens=SUMMARY_MAX_OUTPUT_TOKENS,
                 ),
             )
-            summary_text = response.text.strip()
+            summary_text = (response.text or "").strip()
             logger.info(f"줄거리 생성 완료: {len(summary_text)}자")
             return SummaryGenerationResponse(summary=summary_text)
 
@@ -145,7 +145,7 @@ class StoryGenerationService:
                     max_output_tokens=CHARACTER_MAX_OUTPUT_TOKENS,
                 ),
             )
-            response_text = response.text
+            response_text = response.text or ""
             try:
                 data = self._extract_json_from_response(response_text)
                 # {"characters": [...]} 또는 [...] 둘 다 처리

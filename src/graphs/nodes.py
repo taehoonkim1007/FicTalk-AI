@@ -232,7 +232,7 @@ async def generate_rag_response(state: ChatState) -> dict:
             if finish_reason.name != "STOP":
                 logger.warning(f"RAG 응답 종료 이유: {finish_reason.name}")
 
-        response_text = response.text.strip()
+        response_text = (response.text or "").strip()
 
         # 캐릭터 이름 접두사 제거
         if response_text.startswith(f"{state['character_name']}:"):
@@ -294,7 +294,7 @@ async def generate_creative_response(state: ChatState) -> dict:
             if finish_reason.name != "STOP":
                 logger.warning(f"Creative 응답 종료 이유: {finish_reason.name}")
 
-        response_text = response.text.strip()
+        response_text = (response.text or "").strip()
 
         # 캐릭터 이름 접두사 제거
         if response_text.startswith(f"{state['character_name']}:"):

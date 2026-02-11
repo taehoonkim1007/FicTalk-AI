@@ -100,10 +100,12 @@ class ImageGenerationResponse(BaseModel):
 class VoiceSettings(BaseModel):
     """ElevenLabs TTS 음성 설정."""
 
-    stability: float = Field(0.5, ge=0.0, le=1.0, description="음성 안정성 (낮을수록 감정 풍부)")
-    similarity_boost: float = Field(0.75, ge=0.0, le=1.0, description="원본 음성 유사도")
-    style: float = Field(0.0, ge=0.0, le=1.0, description="스타일 과장 정도")
-    speed: float = Field(1.0, ge=0.7, le=1.2, description="말하기 속도")
+    stability: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="음성 안정성 (낮을수록 감정 풍부)"
+    )
+    similarity_boost: float = Field(default=0.75, ge=0.0, le=1.0, description="원본 음성 유사도")
+    style: float = Field(default=0.0, ge=0.0, le=1.0, description="스타일 과장 정도")
+    speed: float = Field(default=1.0, ge=0.7, le=1.2, description="말하기 속도")
 
 
 class VoiceAttributes(BaseModel):

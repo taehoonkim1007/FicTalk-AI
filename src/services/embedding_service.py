@@ -11,10 +11,10 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingService:
-    """Gemini text-embedding-004를 사용한 임베딩 서비스."""
+    """Gemini gemini-embedding-001을 사용한 임베딩 서비스."""
 
-    MODEL_NAME = "text-embedding-004"
-    EMBEDDING_DIMENSION = 768
+    MODEL_NAME = "gemini-embedding-001"
+    EMBEDDING_DIMENSION = 768  # MRL로 768차원 출력
     CHUNK_SIZE = 500  # 청크당 최대 글자 수
     CHUNK_OVERLAP = 50  # 청크 간 중복 글자 수
 
@@ -71,9 +71,16 @@ class EmbeddingService:
             result = await self._client.aio.models.embed_content(
                 model=self.MODEL_NAME,
                 contents=text_content,
-                config={"task_type": "RETRIEVAL_DOCUMENT"},
+                config={
+                    "task_type": "RETRIEVAL_DOCUMENT",
+                    "output_dimensionality": self.EMBEDDING_DIMENSION,
+                },
             )
+            if not result.embeddings:
+                raise RuntimeError("임베딩 결과가 비어있습니다")
             embedding = result.embeddings[0].values
+            if embedding is None:
+                raise RuntimeError("임베딩 값이 비어있습니다")
             logger.debug(f"임베딩 생성 완료: {len(text_content)}자 → {len(embedding)}차원")
             return list(embedding)
         except Exception as e:
@@ -93,9 +100,17 @@ class EmbeddingService:
             result = await self._client.aio.models.embed_content(
                 model=self.MODEL_NAME,
                 contents=query,
-                config={"task_type": "RETRIEVAL_QUERY"},
+                config={
+                    "task_type": "RETRIEVAL_QUERY",
+                    "output_dimensionality": self.EMBEDDING_DIMENSION,
+                },
             )
-            return list(result.embeddings[0].values)
+            if not result.embeddings:
+                raise RuntimeError("쿼리 임베딩 결과가 비어있습니다")
+            embedding = result.embeddings[0].values
+            if embedding is None:
+                raise RuntimeError("쿼리 임베딩 값이 비어있습니다")
+            return list(embedding)
         except Exception as e:
             logger.error(f"쿼리 임베딩 생성 실패: {e}")
             raise RuntimeError(f"쿼리 임베딩 생성에 실패했습니다: {e}") from e
