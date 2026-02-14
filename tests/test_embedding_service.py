@@ -1,8 +1,9 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.services.embedding_service import EmbeddingService
+from src.services.embedding_service import EMBEDDING_CONCURRENCY_LIMIT, EmbeddingService
 
 
 @pytest.fixture
@@ -10,6 +11,7 @@ def service():
     service = EmbeddingService.__new__(EmbeddingService)
     service.CHUNK_SIZE = 500
     service.CHUNK_OVERLAP = 50
+    service._api_semaphore = asyncio.Semaphore(EMBEDDING_CONCURRENCY_LIMIT)
     return service
 
 
@@ -20,6 +22,13 @@ class TestEmbeddingServiceInit:
             service = EmbeddingService()
             mock_client.assert_called_once()
             assert service._client is not None
+
+    def test_init_creates_semaphore(self):
+        """초기화 시 API 세마포어 생성."""
+        with patch("src.services.embedding_service.genai.Client"):
+            service = EmbeddingService()
+            assert hasattr(service, "_api_semaphore")
+            assert isinstance(service._api_semaphore, asyncio.Semaphore)
 
 
 class TestChunkText:

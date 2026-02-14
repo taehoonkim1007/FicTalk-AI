@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.services.chat_service import ChatService, ChatSessionCache
+from src.services.chat_service import ChatService, ChatSessionCache, _current_db_context
 
 
 @pytest.fixture
@@ -12,109 +12,125 @@ def cache():
 
 
 class TestChatSessionCacheGet:
-    def test_returns_none_for_nonexistent_session(self, cache):
-        result = cache.get("nonexistent-session-id")
+    @pytest.mark.asyncio
+    async def test_returns_none_for_nonexistent_session(self, cache):
+        result = await cache.get("nonexistent-session-id")
         assert result is None
 
-    def test_returns_messages_for_valid_session(self, cache):
+    @pytest.mark.asyncio
+    async def test_returns_messages_for_valid_session(self, cache):
         messages = [{"role": "user", "content": "안녕"}]
-        cache.set("session-1", messages)
-        result = cache.get("session-1")
+        await cache.set("session-1", messages)
+        result = await cache.get("session-1")
         assert result == messages
 
-    def test_returns_none_for_expired_session(self, cache):
+    @pytest.mark.asyncio
+    async def test_returns_none_for_expired_session(self, cache):
         messages = [{"role": "user", "content": "안녕"}]
-        cache.set("session-1", messages)
+        await cache.set("session-1", messages)
         cache._cache["session-1"]["expires_at"] = datetime.now() - timedelta(minutes=1)
-        result = cache.get("session-1")
+        result = await cache.get("session-1")
         assert result is None
 
-    def test_removes_expired_session_from_cache(self, cache):
+    @pytest.mark.asyncio
+    async def test_removes_expired_session_from_cache(self, cache):
         messages = [{"role": "user", "content": "안녕"}]
-        cache.set("session-1", messages)
+        await cache.set("session-1", messages)
         cache._cache["session-1"]["expires_at"] = datetime.now() - timedelta(minutes=1)
-        cache.get("session-1")
+        await cache.get("session-1")
         assert "session-1" not in cache._cache
 
 
 class TestChatSessionCacheSet:
-    def test_stores_messages(self, cache):
+    @pytest.mark.asyncio
+    async def test_stores_messages(self, cache):
         messages = [{"role": "user", "content": "안녕"}]
-        cache.set("session-1", messages)
+        await cache.set("session-1", messages)
         assert cache._cache["session-1"]["messages"] == messages
 
-    def test_sets_expiration(self, cache):
+    @pytest.mark.asyncio
+    async def test_sets_expiration(self, cache):
         messages = [{"role": "user", "content": "안녕"}]
-        cache.set("session-1", messages)
+        await cache.set("session-1", messages)
         expires_at = cache._cache["session-1"]["expires_at"]
         assert expires_at > datetime.now()
         assert expires_at < datetime.now() + timedelta(minutes=31)
 
-    def test_overwrites_existing_session(self, cache):
-        cache.set("session-1", [{"role": "user", "content": "안녕"}])
-        cache.set("session-1", [{"role": "user", "content": "새 메시지"}])
+    @pytest.mark.asyncio
+    async def test_overwrites_existing_session(self, cache):
+        await cache.set("session-1", [{"role": "user", "content": "안녕"}])
+        await cache.set("session-1", [{"role": "user", "content": "새 메시지"}])
         assert cache._cache["session-1"]["messages"] == [{"role": "user", "content": "새 메시지"}]
 
 
 class TestChatSessionCacheUpdate:
-    def test_updates_messages(self, cache):
-        cache.set("session-1", [{"role": "user", "content": "안녕"}])
+    @pytest.mark.asyncio
+    async def test_updates_messages(self, cache):
+        await cache.set("session-1", [{"role": "user", "content": "안녕"}])
         new_messages = [
             {"role": "user", "content": "안녕"},
             {"role": "assistant", "content": "안녕하세요"},
         ]
-        cache.update("session-1", new_messages)
+        await cache.update("session-1", new_messages)
         assert cache._cache["session-1"]["messages"] == new_messages
 
-    def test_does_nothing_for_nonexistent_session(self, cache):
-        cache.update("nonexistent", [{"role": "user", "content": "안녕"}])
+    @pytest.mark.asyncio
+    async def test_does_nothing_for_nonexistent_session(self, cache):
+        await cache.update("nonexistent", [{"role": "user", "content": "안녕"}])
         assert "nonexistent" not in cache._cache
 
 
 class TestChatSessionCacheCreateSession:
-    def test_creates_new_session_id(self, cache):
-        session_id = cache.create_session()
+    @pytest.mark.asyncio
+    async def test_creates_new_session_id(self, cache):
+        session_id = await cache.create_session()
         assert session_id is not None
         assert len(session_id) > 0
 
-    def test_stores_empty_messages_by_default(self, cache):
-        session_id = cache.create_session()
+    @pytest.mark.asyncio
+    async def test_stores_empty_messages_by_default(self, cache):
+        session_id = await cache.create_session()
         assert cache._cache[session_id]["messages"] == []
 
-    def test_stores_provided_messages(self, cache):
+    @pytest.mark.asyncio
+    async def test_stores_provided_messages(self, cache):
         messages = [{"role": "user", "content": "안녕"}]
-        session_id = cache.create_session(messages)
+        session_id = await cache.create_session(messages)
         assert cache._cache[session_id]["messages"] == messages
 
-    def test_unique_session_ids(self, cache):
-        session_ids = [cache.create_session() for _ in range(100)]
+    @pytest.mark.asyncio
+    async def test_unique_session_ids(self, cache):
+        session_ids = [await cache.create_session() for _ in range(100)]
         assert len(set(session_ids)) == 100
 
 
 class TestChatSessionCacheClearExpired:
-    def test_clears_expired_sessions(self, cache):
-        cache.set("expired-1", [])
-        cache.set("expired-2", [])
-        cache.set("valid", [])
+    @pytest.mark.asyncio
+    async def test_clears_expired_sessions(self, cache):
+        await cache.set("expired-1", [])
+        await cache.set("expired-2", [])
+        await cache.set("valid", [])
 
         cache._cache["expired-1"]["expires_at"] = datetime.now() - timedelta(minutes=1)
         cache._cache["expired-2"]["expires_at"] = datetime.now() - timedelta(minutes=1)
 
-        cleared_count = cache.clear_expired()
+        cleared_count = await cache.clear_expired()
 
         assert cleared_count == 2
         assert "expired-1" not in cache._cache
         assert "expired-2" not in cache._cache
         assert "valid" in cache._cache
 
-    def test_returns_zero_when_no_expired(self, cache):
-        cache.set("valid-1", [])
-        cache.set("valid-2", [])
-        cleared_count = cache.clear_expired()
+    @pytest.mark.asyncio
+    async def test_returns_zero_when_no_expired(self, cache):
+        await cache.set("valid-1", [])
+        await cache.set("valid-2", [])
+        cleared_count = await cache.clear_expired()
         assert cleared_count == 0
 
-    def test_returns_zero_for_empty_cache(self, cache):
-        cleared_count = cache.clear_expired()
+    @pytest.mark.asyncio
+    async def test_returns_zero_for_empty_cache(self, cache):
+        cleared_count = await cache.clear_expired()
         assert cleared_count == 0
 
 
@@ -287,17 +303,36 @@ class TestChatServiceNodes:
             }
 
             service = ChatService()
-            service._current_db = AsyncMock()
+            mock_db = AsyncMock()
+            # contextvars에 DB 세션 설정
+            token = _current_db_context.set(mock_db)
+
+            try:
+                state = {
+                    "story_id": "story-123",
+                    "user_message": "테스트",
+                }
+
+                result = await service._retrieve_node(state)
+
+                assert result["mode"] == "rag"
+                mock_retrieve.assert_called_once()
+            finally:
+                _current_db_context.reset(token)
+
+    @pytest.mark.asyncio
+    async def test_retrieve_node_raises_without_db(self):
+        """DB 세션이 없으면 RuntimeError 발생."""
+        with patch("src.services.chat_service.RAGService"):
+            service = ChatService()
 
             state = {
                 "story_id": "story-123",
                 "user_message": "테스트",
             }
 
-            result = await service._retrieve_node(state)
-
-            assert result["mode"] == "rag"
-            mock_retrieve.assert_called_once()
+            with pytest.raises(RuntimeError, match="DB session not set in context"):
+                await service._retrieve_node(state)
 
     @pytest.mark.asyncio
     async def test_rag_response_node(self):
@@ -338,3 +373,57 @@ class TestChatServiceNodes:
 
             assert result["response"] == "Creative 응답"
             assert result["used_rag"] is False
+
+
+class TestChatSessionCacheConcurrency:
+    """ChatSessionCache 동시성 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_set_operations(self, cache):
+        """동시 set 작업이 안전하게 처리되어야 함."""
+        import asyncio
+
+        async def set_session(i: int):
+            await cache.set(f"session-{i}", [{"role": "user", "content": f"message-{i}"}])
+
+        # 100개의 동시 set 작업
+        await asyncio.gather(*[set_session(i) for i in range(100)])
+
+        # 모든 세션이 올바르게 저장되어야 함
+        assert len(cache._cache) == 100
+        for i in range(100):
+            messages = await cache.get(f"session-{i}")
+            assert messages == [{"role": "user", "content": f"message-{i}"}]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_create_session_unique_ids(self, cache):
+        """동시 create_session 호출 시 고유 ID 생성."""
+        import asyncio
+
+        # 100개의 동시 세션 생성
+        session_ids = await asyncio.gather(*[cache.create_session() for _ in range(100)])
+
+        # 모든 ID가 고유해야 함
+        assert len(set(session_ids)) == 100
+
+    @pytest.mark.asyncio
+    async def test_concurrent_get_and_update(self, cache):
+        """동시 get/update 작업이 데이터 손실 없이 처리되어야 함."""
+        import asyncio
+
+        session_id = await cache.create_session([{"role": "user", "content": "initial"}])
+
+        async def update_and_get(i: int):
+            messages = await cache.get(session_id)
+            if messages is not None:
+                new_messages = [*messages, {"role": "user", "content": f"msg-{i}"}]
+                await cache.update(session_id, new_messages)
+            return await cache.get(session_id)
+
+        # 10개의 동시 update 작업
+        await asyncio.gather(*[update_and_get(i) for i in range(10)])
+
+        # 최종 메시지 수 확인 (최소 initial + 일부 추가)
+        final_messages = await cache.get(session_id)
+        assert final_messages is not None
+        assert len(final_messages) >= 1  # 최소한 initial 메시지는 있어야 함

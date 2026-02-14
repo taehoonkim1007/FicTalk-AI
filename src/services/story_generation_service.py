@@ -28,6 +28,9 @@ from src.utils.retry import retry_api_call
 
 logger = logging.getLogger(__name__)
 
+# 동시 Gemini API 요청 수 제한 (Rate Limit 방지)
+API_CONCURRENCY_LIMIT = 3
+
 
 class StoryGenerationService:
     """Google Gemini를 사용한 스토리 생성 서비스."""
@@ -36,6 +39,7 @@ class StoryGenerationService:
 
     def __init__(self) -> None:
         self._client = genai.Client(api_key=settings.google_api_key)
+        self._api_semaphore = asyncio.Semaphore(API_CONCURRENCY_LIMIT)
 
     async def generate_summary(self, title: str, description: str) -> SummaryGenerationResponse:
         """제목과 한줄요약으로 줄거리 생성."""
@@ -63,16 +67,21 @@ class StoryGenerationService:
     async def generate_characters(
         self, title: str, description: str, summary: str
     ) -> CharacterGenerationResponse:
-        """청킹 방식으로 캐릭터 생성 (토큰 제한 대응)."""
+        """청킹 방식으로 캐릭터 생성 (토큰 제한 대응).
+
+        세마포어로 동시 API 요청 수가 제한되어 Rate Limit을 방지합니다.
+        """
         try:
             # 1단계: 줄거리 분할
             chunks = self._split_into_chunks(summary, max_chars=CHARACTER_CHUNK_SIZE)
 
-            # 2단계: 각 청크에서 캐릭터 정보 추출 (병렬)
-            extraction_tasks = [
-                self._extract_characters_from_chunk(title, description, chunk) for chunk in chunks
-            ]
-            chunk_results = await asyncio.gather(*extraction_tasks)
+            # 2단계: 각 청크에서 캐릭터 정보 추출 (세마포어로 동시 요청 제한)
+            async def extract_with_limit(chunk: str) -> list[GeneratedCharacter]:
+                async with self._api_semaphore:
+                    return await self._extract_characters_from_chunk(title, description, chunk)
+
+            logger.info(f"캐릭터 추출 시작: {len(chunks)}개 청크 병렬 처리")
+            chunk_results = await asyncio.gather(*[extract_with_limit(chunk) for chunk in chunks])
 
             # 3단계: 결과 병합 + 중복 제거
             merged_characters = self._merge_characters(chunk_results)

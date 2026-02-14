@@ -50,7 +50,7 @@ class TestExtractImageFromResponse:
         with pytest.raises(ValueError) as exc_info:
             service._extract_image_from_response(mock_response)
 
-        assert "candidates가 없습니다" in str(exc_info.value)
+        assert "No candidates in response" in str(exc_info.value)
 
     def test_no_image_data_raises_error(self, service):
         """이미지 데이터가 없으면 ValueError 발생."""
@@ -62,7 +62,7 @@ class TestExtractImageFromResponse:
         with pytest.raises(ValueError) as exc_info:
             service._extract_image_from_response(mock_response)
 
-        assert "이미지 생성 결과가 없습니다" in str(exc_info.value)
+        assert "No image data in response" in str(exc_info.value)
 
     def test_empty_parts_raises_error(self, service):
         """parts가 비어있으면 ValueError 발생."""
@@ -72,7 +72,7 @@ class TestExtractImageFromResponse:
         with pytest.raises(ValueError) as exc_info:
             service._extract_image_from_response(mock_response)
 
-        assert "이미지 생성 결과가 없습니다" in str(exc_info.value)
+        assert "No image data in response" in str(exc_info.value)
 
 
 class TestGenerateProfileImage:

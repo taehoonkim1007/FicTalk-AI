@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 
@@ -8,6 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import settings
 
 logger = logging.getLogger(__name__)
+
+# 동시 임베딩 생성 요청 수 제한 (Rate Limit 방지)
+EMBEDDING_CONCURRENCY_LIMIT = 5
 
 
 class EmbeddingService:
@@ -20,6 +24,7 @@ class EmbeddingService:
 
     def __init__(self) -> None:
         self._client = genai.Client(api_key=settings.google_api_key)
+        self._api_semaphore = asyncio.Semaphore(EMBEDDING_CONCURRENCY_LIMIT)
 
     def chunk_text(self, text: str) -> list[str]:
         """텍스트를 오버랩이 있는 청크로 분할.
@@ -123,6 +128,8 @@ class EmbeddingService:
     ) -> int:
         """스토리 요약을 청킹하고 임베딩 생성 후 DB 저장.
 
+        임베딩 생성은 병렬로 처리되며, 세마포어로 동시 요청 수가 제한됩니다.
+
         Args:
             db: 데이터베이스 세션
             story_id: 스토리 ID
@@ -144,9 +151,16 @@ class EmbeddingService:
             logger.warning(f"스토리 {story_id}: 청킹할 내용 없음")
             return 0
 
-        # 각 청크에 대해 임베딩 생성 및 저장
-        for index, chunk_content in enumerate(chunks):
-            embedding = await self.generate_embedding(chunk_content)
+        async def generate_with_limit(chunk_content: str) -> list[float]:
+            async with self._api_semaphore:
+                return await self.generate_embedding(chunk_content)
+
+        # 병렬로 임베딩 생성
+        logger.info(f"스토리 {story_id}: {len(chunks)}개 청크 임베딩 병렬 생성 시작")
+        embeddings = await asyncio.gather(*[generate_with_limit(chunk) for chunk in chunks])
+
+        # 순차적으로 DB 저장 (순서 보장)
+        for index, (chunk_content, embedding) in enumerate(zip(chunks, embeddings, strict=True)):
             chunk_id = str(uuid.uuid4())
 
             # pgvector 형식으로 저장

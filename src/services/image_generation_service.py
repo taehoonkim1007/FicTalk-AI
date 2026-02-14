@@ -209,7 +209,7 @@ class ImageGenerationService:
     def _extract_image_from_response(self, response) -> str:
         """Gemini API 응답에서 이미지 데이터 추출."""
         if not response.candidates:
-            raise ValueError("응답에 candidates가 없습니다")
+            raise ValueError("No candidates in response")
 
         candidate = response.candidates[0]
         image_data = None
@@ -221,7 +221,7 @@ class ImageGenerationService:
                     break
 
         if image_data is None:
-            raise ValueError("이미지 생성 결과가 없습니다")
+            raise ValueError("No image data in response")
 
         if isinstance(image_data, bytes):
             return base64.b64encode(image_data).decode("utf-8")

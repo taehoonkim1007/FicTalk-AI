@@ -18,6 +18,7 @@ RETRYABLE_ERROR_PATTERNS = (
     "RESOURCE_EXHAUSTED",
     "rate limit",
     "quota exceeded",
+    "no image data in response",
 )
 
 

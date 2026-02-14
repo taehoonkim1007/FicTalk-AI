@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 from typing import Literal, TypedDict
 
@@ -16,6 +18,9 @@ from src.graphs.state import ChatState
 from src.services.rag_service import RAGService
 
 logger = logging.getLogger(__name__)
+
+# 요청별 DB 세션을 저장하는 컨텍스트 변수 (동시성 안전)
+_current_db_context: ContextVar[AsyncSession | None] = ContextVar("current_db", default=None)
 
 
 class CacheEntry(TypedDict):
@@ -40,56 +45,62 @@ class ChatSessionCache:
 
     세션 ID를 키로 대화 내역을 저장하여 네트워크 비용을 절감합니다.
     TTL 기반으로 오래된 세션은 자동 만료됩니다.
+    asyncio.Lock으로 동시성 보호됩니다.
     """
 
     def __init__(self, ttl_minutes: int = SESSION_TTL_MINUTES) -> None:
         self._cache: dict[str, CacheEntry] = {}
         self._ttl_minutes = ttl_minutes
+        self._lock = asyncio.Lock()
 
-    def get(self, session_id: str) -> list[dict] | None:
+    async def get(self, session_id: str) -> list[dict] | None:
         """캐시된 메시지 반환."""
-        if session_id not in self._cache:
-            return None
+        async with self._lock:
+            if session_id not in self._cache:
+                return None
 
-        entry = self._cache[session_id]
-        if datetime.now() > entry["expires_at"]:
-            del self._cache[session_id]
-            logger.info(f"세션 만료: {session_id}")
-            return None
+            entry = self._cache[session_id]
+            if datetime.now() > entry["expires_at"]:
+                del self._cache[session_id]
+                logger.info(f"세션 만료: {session_id}")
+                return None
 
-        return entry["messages"]
+            return entry["messages"]
 
-    def set(self, session_id: str, messages: list[dict]) -> None:
+    async def set(self, session_id: str, messages: list[dict]) -> None:
         """메시지 캐싱."""
-        self._cache[session_id] = {
-            "messages": messages,
-            "expires_at": datetime.now() + timedelta(minutes=self._ttl_minutes),
-        }
+        async with self._lock:
+            self._cache[session_id] = {
+                "messages": messages,
+                "expires_at": datetime.now() + timedelta(minutes=self._ttl_minutes),
+            }
 
-    def update(self, session_id: str, messages: list[dict]) -> None:
+    async def update(self, session_id: str, messages: list[dict]) -> None:
         """메시지 업데이트 및 TTL 갱신."""
-        if session_id in self._cache:
-            self._cache[session_id]["messages"] = messages
-            self._cache[session_id]["expires_at"] = datetime.now() + timedelta(
-                minutes=self._ttl_minutes
-            )
+        async with self._lock:
+            if session_id in self._cache:
+                self._cache[session_id]["messages"] = messages
+                self._cache[session_id]["expires_at"] = datetime.now() + timedelta(
+                    minutes=self._ttl_minutes
+                )
 
-    def create_session(self, messages: list[dict] | None = None) -> str:
+    async def create_session(self, messages: list[dict] | None = None) -> str:
         """새 세션 생성 및 ID 반환."""
         session_id = str(uuid.uuid4())
-        self.set(session_id, messages or [])
+        await self.set(session_id, messages or [])
         logger.info(f"새 세션 생성: {session_id}")
         return session_id
 
-    def clear_expired(self) -> int:
+    async def clear_expired(self) -> int:
         """만료된 캐시 정리. 정리된 세션 수 반환."""
-        now = datetime.now()
-        expired_keys = [key for key, entry in self._cache.items() if now > entry["expires_at"]]
-        for key in expired_keys:
-            del self._cache[key]
-        if expired_keys:
-            logger.info(f"만료된 세션 정리: {len(expired_keys)}개")
-        return len(expired_keys)
+        async with self._lock:
+            now = datetime.now()
+            expired_keys = [key for key, entry in self._cache.items() if now > entry["expires_at"]]
+            for key in expired_keys:
+                del self._cache[key]
+            if expired_keys:
+                logger.info(f"만료된 세션 정리: {len(expired_keys)}개")
+            return len(expired_keys)
 
 
 class ChatService:
@@ -150,12 +161,14 @@ class ChatService:
         return state["mode"]
 
     async def _retrieve_node(self, state: ChatState) -> dict:
-        """RAG 검색 노드 (db 세션은 run에서 주입)."""
-        # db 세션은 _current_db에서 가져옴
+        """RAG 검색 노드 (db 세션은 contextvars에서 가져옴)."""
+        db = _current_db_context.get()
+        if db is None:
+            raise RuntimeError("DB session not set in context")
         return await retrieve_and_evaluate(
             state=state,
             rag_service=self._rag_service,
-            db=self._current_db,
+            db=db,
         )
 
     async def _rag_response_node(self, state: ChatState) -> dict:
@@ -196,66 +209,70 @@ class ChatService:
         Returns:
             응답 결과 (response, used_rag, mode, max_similarity, session_id)
         """
-        # DB 세션을 인스턴스 변수로 저장 (노드에서 사용)
-        self._current_db = db
+        # DB 세션을 컨텍스트 변수에 저장 (요청별 스코프, 동시성 안전)
+        token = _current_db_context.set(db)
 
-        # 세션 캐시에서 메시지 가져오기 또는 새 세션 생성
-        if session_id:
-            cached_messages = self._session_cache.get(session_id)
-            if cached_messages is not None:
-                effective_messages = cached_messages
-                logger.info(f"캐시 히트: {session_id} (메시지 {len(cached_messages)}개)")
+        try:
+            # 세션 캐시에서 메시지 가져오기 또는 새 세션 생성
+            if session_id:
+                cached_messages = await self._session_cache.get(session_id)
+                if cached_messages is not None:
+                    effective_messages = cached_messages
+                    logger.info(f"캐시 히트: {session_id} (메시지 {len(cached_messages)}개)")
+                else:
+                    # 세션 만료 - 새 세션 생성
+                    effective_messages = messages or []
+                    session_id = await self._session_cache.create_session(effective_messages)
+                    logger.info(f"세션 만료로 새 세션 생성: {session_id}")
             else:
-                # 세션 만료 - 새 세션 생성
+                # 새 세션 생성
                 effective_messages = messages or []
-                session_id = self._session_cache.create_session(effective_messages)
-                logger.info(f"세션 만료로 새 세션 생성: {session_id}")
-        else:
-            # 새 세션 생성
-            effective_messages = messages or []
-            session_id = self._session_cache.create_session(effective_messages)
+                session_id = await self._session_cache.create_session(effective_messages)
 
-        # 초기 상태 구성
-        initial_state: ChatState = {
-            "character_name": character_name,
-            "character_role": character_role,
-            "character_personality": character_personality,
-            "story_id": story_id,
-            "story_title": story_title,
-            "story_summary": story_summary,
-            "messages": effective_messages,
-            "user_message": user_message,
-            "rag_results": [],
-            "max_similarity": 0.0,
-            "mode": "creative",
-            "response": "",
-            "used_rag": False,
-        }
+            # 초기 상태 구성
+            initial_state: ChatState = {
+                "character_name": character_name,
+                "character_role": character_role,
+                "character_personality": character_personality,
+                "story_id": story_id,
+                "story_title": story_title,
+                "story_summary": story_summary,
+                "messages": effective_messages,
+                "user_message": user_message,
+                "rag_results": [],
+                "max_similarity": 0.0,
+                "mode": "creative",
+                "response": "",
+                "used_rag": False,
+            }
 
-        # 워크플로우 컴파일 및 실행
-        compiled = self._workflow.compile()
-        result = await compiled.ainvoke(initial_state)
+            # 워크플로우 컴파일 및 실행
+            compiled = self._workflow.compile()
+            result = await compiled.ainvoke(initial_state)
 
-        # 응답 후 메시지 히스토리 업데이트
-        updated_messages = [
-            *effective_messages,
-            {"role": "user", "content": user_message},
-            {"role": "assistant", "content": result["response"]},
-        ]
-        self._session_cache.update(session_id, updated_messages)
+            # 응답 후 메시지 히스토리 업데이트
+            updated_messages = [
+                *effective_messages,
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": result["response"]},
+            ]
+            await self._session_cache.update(session_id, updated_messages)
 
-        logger.info(
-            f"채팅 응답 생성 완료: {character_name} | "
-            f"모드: {result['mode']} | "
-            f"유사도: {result['max_similarity']:.3f} | "
-            f"RAG 사용: {result['used_rag']} | "
-            f"세션: {session_id}"
-        )
+            logger.info(
+                f"채팅 응답 생성 완료: {character_name} | "
+                f"모드: {result['mode']} | "
+                f"유사도: {result['max_similarity']:.3f} | "
+                f"RAG 사용: {result['used_rag']} | "
+                f"세션: {session_id}"
+            )
 
-        return {
-            "response": result["response"],
-            "used_rag": result["used_rag"],
-            "mode": result["mode"],
-            "max_similarity": result["max_similarity"],
-            "session_id": session_id,
-        }
+            return {
+                "response": result["response"],
+                "used_rag": result["used_rag"],
+                "mode": result["mode"],
+                "max_similarity": result["max_similarity"],
+                "session_id": session_id,
+            }
+        finally:
+            # 컨텍스트 변수 복원
+            _current_db_context.reset(token)
