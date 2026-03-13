@@ -1,0 +1,57 @@
+name: Collect Traffic Data
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # 매일 UTC 00:00 (KST 09:00)
+  workflow_dispatch: # 수동 실행 가능
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect and save traffic data
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.TRAFFIC_TOKEN }}
+          script: |
+            const repo = context.repo.repo;
+            const owner = context.repo.owner;
+            const gistId = '${{ secrets.GIST_ID }}';
+
+            // 트래픽 데이터 수집
+            const [views, clones] = await Promise.all([
+              github.rest.repos.getViews({ owner, repo, per: 'day' }),
+              github.rest.repos.getClones({ owner, repo, per: 'day' }),
+            ]);
+
+            // 기존 Gist 데이터 읽기
+            const gist = await github.rest.gists.get({ gist_id: gistId });
+            const filename = 'fictalk-traffic.json';
+            const existing = JSON.parse(gist.data.files[filename]?.content || '{}');
+
+            // 레포별 데이터 구조 초기화
+            if (!existing[repo]) {
+              existing[repo] = { views: {}, clones: {} };
+            }
+
+            // 새 데이터 병합 (날짜별 중복 제거)
+            for (const v of views.data.views) {
+              const date = v.timestamp.split('T')[0];
+              existing[repo].views[date] = { count: v.count, uniques: v.uniques };
+            }
+            for (const c of clones.data.clones) {
+              const date = c.timestamp.split('T')[0];
+              existing[repo].clones[date] = { count: c.count, uniques: c.uniques };
+            }
+
+            // Gist 업데이트
+            await github.rest.gists.update({
+              gist_id: gistId,
+              files: {
+                [filename]: {
+                  content: JSON.stringify(existing, null, 2),
+                },
+              },
+            });
+
+            console.log(`✅ ${repo} traffic data saved`);
