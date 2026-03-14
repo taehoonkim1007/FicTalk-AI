@@ -9,9 +9,6 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # OpenAI
-    openai_api_key: str
-
     # Google Gemini
     google_api_key: str
 
@@ -22,7 +19,7 @@ class Settings(BaseSettings):
     database_url: str
 
     # NestJS Backend
-    nestjs_backend_url: str = "http://localhost:3000"
+    nestjs_backend_url: str
 
     # Server
     host: str = "0.0.0.0"
